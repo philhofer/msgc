@@ -1,16 +1,19 @@
 #include <stdio.h>
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
 #include "msgpack.h"
 
-#define SIZES 0, 1, 240, 280, 4000, 16600
+// sizes are 0, (fixed), uint8, uint16, uint32
+#define SIZES 0, 1, 240, 4000, 32000
 
-#define BUFSIZE 4096
+#define BUFSIZE 4096	
 
 #define ASSERT_CIRCULAR_SIZES(typ) \
-	printf("testing %s...\n", #typ); \
 	ASSERT_CIRCULAR_SIZE(typ, 0); \
 	ASSERT_CIRCULAR_SIZE(typ, 1); \
+	ASSERT_CIRCULAR_SIZE(typ, 18); \
+	ASSERT_CIRCULAR_SIZE(typ, 34); \
 	ASSERT_CIRCULAR_SIZE(typ, 240); \
 	ASSERT_CIRCULAR_SIZE(typ, 280); \
 	ASSERT_CIRCULAR_SIZE(typ, 4000); \
@@ -19,59 +22,148 @@
 
 #define ASSERT_CIRCULAR_SIZE(typ, sz) \
 	msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
-	assert(msgpack_write_ ## typ ## size(&enc, sz)); \
+	assert(msgpack_write_## typ ##size(&enc, sz) == MSGPACK_OK); \
 	msgpack_decode_mem_init(&dec, buf, enc.off); \
 	{ \
 		uint32_t out; \
-		if (!msgpack_read_ ## typ ## size(&dec, &out)) { \
-			printf("\tunexpected EOF\n"); \
+		int err; \
+		err = msgpack_read_## typ ##size(&dec, &out); \
+		if (err != MSGPACK_OK) { \
+			printf("FAIL: (%s): %s\n", #typ, msgpack_strerror(err)); \
+		} else if (out != sz) { \
+			printf("FAIL: (%s): put %d in and got %d out\n", #typ, sz, out); \
 			failed = true; \
 		} \
-		if (out != sz) { \
-			printf("\tput %d in and got %d out\n", sz, out);	\
-			failed = true; \
-		} \
-		if (msgpack_read_nil(&dec)) { \
-			printf("\tnot at EOF\n"); \
+		if (msgpack_read_nil(&dec) == MSGPACK_OK) { \
+			printf("FAIL: (%s): not at EOF\n", #typ); \
 		} \
 	}
 
-#define ASSERT_ZERO_EQ(typ,typt) \
-	printf("testing zero for %s...\n", #typ); \
+#define ASSERT_RAW_SIZE_EQ(sz) \
+	{ \
+		void* raw = malloc(sz); \
+		memset(raw, 1, sz); \
+		msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
+		assert(msgpack_write_raw(&enc, raw, sz) == MSGPACK_OK); \
+		assert(enc.off == sz); \
+		assert(0 == memcmp(enc.base, raw, enc.off)); \
+		msgpack_decode_mem_init(&dec, raw, enc.off); \
+		void* out = malloc(sz); \
+		assert(msgpack_read_raw(&dec, out, sz) == MSGPACK_OK); \
+		assert(dec.off == sz); \
+		assert(0 == memcmp(raw, out, sz)); \
+		free(raw); free(out); \
+	}
+
+#define ASSERT_STR_EQ(typ, val) \
+	{ \
+		uint32_t sz = sizeof(val); \
+		msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
+		assert(msgpack_write_## typ (&enc, val, sz) == MSGPACK_OK); \
+		msgpack_decode_mem_init(&dec, buf, enc.off); \
+		char* o = malloc((size_t)sz); \
+		uint32_t osz; \
+		assert(msgpack_read_ ## typ ## size(&dec, &osz) == MSGPACK_OK); \
+		if (sz != osz) { \
+			printf("FAIL: %s(size: %d): read size %d\n", #typ, sz, osz); \
+			failed = true; \
+		} else { \
+			assert(msgpack_read_raw(&dec, o, sz) == MSGPACK_OK); \
+			if (memcmp(o, val, sz) != 0) { \
+				printf("FAIL: %s(size: %d): in != out\n", #typ, sz); \
+				failed = true; \
+			}  \
+		} \
+		free(o); \
+	}
+
+
+#define ASSERT_VAL_EQ(typ, typt, val) \
 	msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
-	assert(msgpack_write_ ## typ (&enc, 0)); \
+	assert(msgpack_write_## typ (&enc, val) == MSGPACK_OK); \
 	msgpack_decode_mem_init(&dec, buf, enc.off); \
 	{ \
 		typt out; \
-		if (!msgpack_read_ ## typ (&dec, &out)) { \
-			printf("\tunexpected EOF\n"); \
+		int err; \
+		err = msgpack_read_ ##typ (&dec, &out); \
+		if (err != MSGPACK_OK) { \
+			printf("FAIL: %s(%s): %s\n", #typ, #val, msgpack_strerror(err)); \
 			failed = true; \
+		} \
+		if (out != val) { \
+			printf("FAIL: %s(%s): not cicrcular\n", #typ, #val); \
+			failed = true; \
+		} \
+		if (msgpack_read_nil(&dec) == MSGPACK_OK) { \
+			printf("FAIL: %s(%s): not at EOF\n", #typ, #val); \
+		} \
+	}
+
+
+#define ASSERT_ZERO_EQ(typ,typt) \
+	msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
+	assert(msgpack_write_## typ (&enc, 0) == 0); \
+	msgpack_decode_mem_init(&dec, buf, enc.off); \
+	{ \
+		typt out; \
+		int err; \
+		err = msgpack_read_ ##typ (&dec, &out); \
+		if (err != MSGPACK_OK) { \
+			printf("FAIL: %s(0): %s\n", #typ, msgpack_strerror(err)); \
 		} \
 		if (out != 0) { \
-			printf("\rnot circular!\n"); \
+			printf("FAIL: %s(0): not circular\n", #typ); \
 			failed = true; \
 		} \
-		if (msgpack_read_nil(&dec)) { \
-			printf("\tnot at EOF\n"); \
+		if (msgpack_read_nil(&dec) == MSGPACK_OK) { \
+			printf("FAIL: %s(0): not at EOF\n", #typ); \
+			failed = true; \
 		} \
 	}
 
 int main() {
 	printf("RUNNING TESTS...\n");
-	bool failed = false;
-	char buf[BUFSIZE];
 	msgpack_encoder_t enc;
 	msgpack_decoder_t dec;
+	char buf[BUFSIZE];
+	bool failed = false;
 
 	ASSERT_CIRCULAR_SIZES(map);
 	ASSERT_CIRCULAR_SIZES(array);
 	ASSERT_CIRCULAR_SIZES(str);
 	ASSERT_CIRCULAR_SIZES(bin);
 
-	ASSERT_ZERO_EQ(uint,uint64_t);
-	ASSERT_ZERO_EQ(int,int64_t);
-	ASSERT_ZERO_EQ(float,float);
-	ASSERT_ZERO_EQ(double,double);
+	ASSERT_ZERO_EQ(uint, uint64_t);
+	ASSERT_ZERO_EQ(int, int64_t);
+	ASSERT_ZERO_EQ(float, float);
+	ASSERT_ZERO_EQ(double, double);
+
+	ASSERT_VAL_EQ(int, int64_t, 0);      	  // zero
+	ASSERT_VAL_EQ(int, int64_t, -1);     	  // nfixint
+	ASSERT_VAL_EQ(int, int64_t, -5);     	  // nfixint
+	ASSERT_VAL_EQ(int, int64_t, -200);   	  // -int8
+	ASSERT_VAL_EQ(int, int64_t, -400);   	  // -int16
+	ASSERT_VAL_EQ(int, int64_t, -30982); 	  // -int32
+	ASSERT_VAL_EQ(int, int64_t, -5000000000); // -int64
+	ASSERT_VAL_EQ(int, int64_t, 40);     	  // fixint
+	ASSERT_VAL_EQ(int, int64_t, 220);		  // int8
+	ASSERT_VAL_EQ(int, int64_t, 3908);   	  // int16
+	ASSERT_VAL_EQ(int, int64_t, 16600);  	  // int32
+	ASSERT_VAL_EQ(int, int64_t, 50000000000); // int64
+
+	ASSERT_VAL_EQ(uint, uint64_t, 0); 		   // zero
+	ASSERT_VAL_EQ(uint, uint64_t, 1); 		   // fixint
+	ASSERT_VAL_EQ(uint, uint64_t, 14); 		   // fixint
+	ASSERT_VAL_EQ(uint, uint64_t, 200); 	   // uint8
+	ASSERT_VAL_EQ(uint, uint64_t, 300); 	   // uint16
+	ASSERT_VAL_EQ(uint, uint64_t, 20000);      // uint32
+	ASSERT_VAL_EQ(uint, uint64_t, 5000000000); // uint64
+
+	ASSERT_RAW_SIZE_EQ(5);
+	ASSERT_RAW_SIZE_EQ(2048);
+
+	ASSERT_STR_EQ(str, "hello, world!");
+	ASSERT_STR_EQ(bin, "hello, world!");
 
 	if (failed) {
 		printf("WARNING: TESTS FAILED!\n");

@@ -1,30 +1,35 @@
 # compiler
 CC = clang
 
-# flags
-CFLAGS = -c -Wall -pedantic-errors -O2
+# compile flags
+# NOTE: -emit-llvm and -pedantic-errors depend on clang;
+# however, using llvm bitcode enables LTO
+CFLAGS = -c -emit-llvm -Wall -pedantic-errors -O2
 
-# flags for linking into test files
-TESTFLAGS = -g -Wall -pedantic-errors -O2
+# link flags
+# NOTE: -pendantic-errors depends on clang
+LINKFLAGS = -Wall -pedantic-errors -O2
 
-# memtest output
-MTEST = memtest.out
+msgpack.o: msgpack.c
+	$(CC) $(CFLAGS) msgpack.c -o msgpack.o
 
-# library files
-FILES = msgpack.h msgpack.c
+memtest.o: memtest.c
+	$(CC) $(CFLAGS) memtest.c -o memtest.o
 
-# build artifacts
-OBJECTS = msgpack.o
+memtest.out: memtest.o msgpack.o
+	$(CC) $(LINKFLAGS) memtest.o msgpack.o -o memtest.out
 
-all:
-	$(CC) $(CFLAGS) $(FILES)
+test: memtest.out
+	@./memtest.out
 
-buildmemtest: all
-	$(CC) $(TESTFLAGS) $(OBJECTS) memtest.c -o memtest.out
+membench.o: membench.c
+	$(CC) $(CFLAGS) membench.c -o membench.o
 
-test: buildmemtest
-	./$(MTEST)
+membench.out: membench.o msgpack.o
+	$(CC) $(LINKFLAGS) membench.o msgpack.o -o membench.out
+
+bench: membench.out
+	@./membench.out
 	
 clean:
-	$(RM) -r memtest.out* *.o *.gch
-
+	@$(RM) -r *.o *.gch *.bc *.out

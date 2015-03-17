@@ -4,8 +4,7 @@
 #include <string.h>
 #include "msgpack.h"
 
-// sizes are 0, (fixed), uint8, uint16, uint32
-#define SIZES 0, 1, 240, 4000, 32000
+/* WARNING: GROSS MACRO NONSENSE AHEAD */
 
 #define BUFSIZE 4096	
 
@@ -57,7 +56,7 @@
 
 #define ASSERT_STR_EQ(typ, val) \
 	{ \
-		uint32_t sz = sizeof(val); \
+		uint32_t sz = sizeof(val)-1; \
 		msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
 		assert(msgpack_write_## typ (&enc, val, sz) == MSGPACK_OK); \
 		msgpack_decode_mem_init(&dec, buf, enc.off); \
@@ -82,6 +81,8 @@
 	msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
 	assert(msgpack_write_## typ (&enc, val) == MSGPACK_OK); \
 	msgpack_decode_mem_init(&dec, buf, enc.off); \
+	assert(msgpack_skip(&dec) == MSGPACK_OK); \
+	msgpack_decode_mem_init(&dec, buf, enc.off); \
 	{ \
 		typt out; \
 		int err; \
@@ -99,32 +100,35 @@
 		} \
 	}
 
-
-#define ASSERT_ZERO_EQ(typ,typt) \
+// for floating-point tests
+#define ASSERT_APPROX_EQ(typ, typt, val) \
 	msgpack_encode_mem_init(&enc, buf, BUFSIZE); \
-	assert(msgpack_write_## typ (&enc, 0) == 0); \
+	assert(msgpack_write_## typ (&enc, val) == MSGPACK_OK); \
 	msgpack_decode_mem_init(&dec, buf, enc.off); \
 	{ \
 		typt out; \
 		int err; \
-		err = msgpack_read_ ##typ (&dec, &out); \
+		err = msgpack_read_## typ (&dec, &out); \
 		if (err != MSGPACK_OK) { \
-			printf("FAIL: %s(0): %s\n", #typ, msgpack_strerror(err)); \
+			printf("FAIL: %s(%s): %s\n", #typ, #val, msgpack_strerror(err)); \
+			failed = true; \
 		} \
-		if (out != 0) { \
-			printf("FAIL: %s(0): not circular\n", #typ); \
+		typt diff = out - val; \
+		if (diff < 0) diff *= -1.0; \
+		if (diff > 10E-4) { \
+			printf("FAIL: %s(%s): not circular\n", #typ, #val); \
 			failed = true; \
 		} \
 		if (msgpack_read_nil(&dec) == MSGPACK_OK) { \
-			printf("FAIL: %s(0): not at EOF\n", #typ); \
+			printf("FAIL: %s(%s): not at EOF\n", #typ, #val); \
 			failed = true; \
 		} \
 	}
 
 int main() {
 	printf("RUNNING TESTS...\n");
-	msgpack_encoder_t enc;
-	msgpack_decoder_t dec;
+	Encoder enc;
+	Decoder dec;
 	char buf[BUFSIZE];
 	bool failed = false;
 
@@ -133,10 +137,8 @@ int main() {
 	ASSERT_CIRCULAR_SIZES(str);
 	ASSERT_CIRCULAR_SIZES(bin);
 
-	ASSERT_ZERO_EQ(uint, uint64_t);
-	ASSERT_ZERO_EQ(int, int64_t);
-	ASSERT_ZERO_EQ(float, float);
-	ASSERT_ZERO_EQ(double, double);
+	ASSERT_APPROX_EQ(float, float, (float)3.14);
+	ASSERT_APPROX_EQ(double, double, 3.1415926);
 
 	ASSERT_VAL_EQ(int, int64_t, 0);      	  // zero
 	ASSERT_VAL_EQ(int, int64_t, -1);     	  // nfixint

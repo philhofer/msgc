@@ -11,15 +11,15 @@
 #define BUFSIZE 2048
 
 // these must take string literals
-#define write_strlit(e, str) msgpack_write_str(e, str, sizeof(str))
-#define write_binlit(e, str) msgpack_write_bin(e, str, sizeof(str))
+#define write_strlit(e, str) msgpack_write_str(e, str, sizeof(str)-1)
+#define write_binlit(e, str) msgpack_write_bin(e, str, sizeof(str)-1)
 
 #define readstr(d) msgpack_read_strsize(d, &sz); msgpack_read_raw(d, scratch, (size_t)sz)
 
 int main() {
 	printf("Running benchmarks...\n");
-	msgpack_encoder_t enc;
-	msgpack_decoder_t dec;
+	Encoder enc;
+	Decoder dec;
 	char buf[BUFSIZE];
 
 	clock_t start = clock();
@@ -30,7 +30,7 @@ int main() {
 		write_strlit(&enc, "field_label_one");
 		write_strlit(&enc, "field_body_one");
 		write_strlit(&enc, "a_float");
-		msgpack_write_float(&enc, 3.14159);
+		msgpack_write_float(&enc, (float)3.14);
 		write_strlit(&enc, "an_integer");
 		msgpack_write_int(&enc, 348);
 		write_strlit(&enc, "some_binary");
@@ -42,6 +42,16 @@ int main() {
 	size_t bytes = enc.off; // note: approximately 113
 	double mbps = (double)(((bytes*ITERS)/(end-start))*(CLOCKS_PER_SEC/MILLION));
 	printf("encode writes %g MB/sec\n", mbps);
+
+	// validation of the encoded body
+	start = clock();
+	for(int i=0; i<ITERS; i++) {
+		msgpack_decode_mem_init(&dec, buf, enc.off);
+		msgpack_skip(&dec);
+	}
+	end = clock();
+	mbps = (double)(((bytes*ITERS)/(end-start))*(CLOCKS_PER_SEC/MILLION));
+	printf("skip skips %g MB/sec\n", mbps);
 
 	start = clock();
 	uint32_t sz;
@@ -57,9 +67,9 @@ int main() {
 		float f;
 		msgpack_read_float(&dec, &f);
 		readstr(&dec);
-		int64_t i;
-		msgpack_read_int(&dec, &i);
-		assert(i == 348);
+		int64_t ix;
+		msgpack_read_int(&dec, &ix);
+		assert(ix == 348);
 		readstr(&dec);
 		msgpack_read_binsize(&dec, &sz);
 		msgpack_read_raw(&dec, scratch, (size_t)sz);

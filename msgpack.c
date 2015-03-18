@@ -19,6 +19,14 @@
 
 #define TRY(expr) int err = expr; if (err != MSGPACK_OK) return err
 
+size_t fill_file(void* ctx, void* buf, size_t amt) {
+	return fread(buf, 1, amt, (FILE*)ctx);
+}
+
+size_t flush_file(void* ctx, const void* buf, size_t amt) {
+	return fwrite(buf, 1, amt, (FILE*)ctx);
+}
+
 // all type byte tags
 typedef enum {
 	TAG_NIL = 0xc0,
@@ -53,7 +61,7 @@ typedef enum {
 	TAG_ARRAY32 = 0xdd,
 	TAG_MAP16 = 0xde,
 	TAG_MAP32 = 0xdf,
-} tag_t;
+} tag;
 
 // union for type-punning f32
 typedef union {
@@ -67,7 +75,7 @@ typedef union {
 	double   val;
 } double_pun;
 
-const char* msgpack_strerror(int i) {
+const char* mp_strerror(int i) {
 	switch (i) {
 	case MSGPACK_OK:
 		return "OK";
@@ -82,8 +90,8 @@ const char* msgpack_strerror(int i) {
 	}
 }
 
-// get wire type of tag_t
-WireTyp msgpack_type(uint8_t b) {
+// get wire type of tag
+WireTyp mp_type(uint8_t b) {
 	// all fixed types are less than
 	// TAG_NIL except TAG_NEGFIXINT
 	if (b < TAG_NIL) {
@@ -102,7 +110,7 @@ WireTyp msgpack_type(uint8_t b) {
 		return MSG_INT;
 	}
 
-	switch ((tag_t)b) {
+	switch ((tag)b) {
 	case TAG_NIL:
 		return MSG_NIL;
 	case TAG_INVALID: // unused byte
@@ -152,7 +160,7 @@ WireTyp msgpack_type(uint8_t b) {
 	return MSG_INVALID;
 }
 
-void msgpack_decode_stream_init(Decoder* d, void* ctx, Fill r, void* buf, size_t cap) {
+void mp_decode_stream_init(Decoder* d, void* ctx, Fill r, unsigned char* buf, size_t cap) {
 	assert(cap >= 18);
 	d->base = buf;
 	d->off = 0;
@@ -163,7 +171,7 @@ void msgpack_decode_stream_init(Decoder* d, void* ctx, Fill r, void* buf, size_t
 	return;
 }
 
-void msgpack_decode_mem_init(Decoder* d, void* mem, size_t cap) {
+void mp_decode_mem_init(Decoder* d, unsigned char* mem, size_t cap) {
 	d->base = mem;
 	d->off = 0;
 	d->used = cap;
@@ -173,8 +181,9 @@ void msgpack_decode_mem_init(Decoder* d, void* mem, size_t cap) {
 	return;
 }
 
-// number of bytes immediately available for reading
-static size_t buffered(Decoder* d) { return d->used - d->off; }
+size_t mp_dec_buffered(Decoder* d) { return d->used - d->off; }
+
+size_t mp_dec_capacity(Decoder* d) { return d->cap; }
 
 static int fill(Decoder* d) {
 	if (d->read != NULL) {
@@ -194,7 +203,7 @@ static int decoder_next(Decoder* d, size_t req, unsigned char** c) {
 	if (req > d->cap) {
 		return ERR_MSGPACK_EOF;
 	}
-	while (buffered(d) < req) {
+	while (mp_dec_buffered(d) < req) {
 		TRY(fill(d));
 	}
 	*c = d->base + d->off;
@@ -203,7 +212,7 @@ static int decoder_next(Decoder* d, size_t req, unsigned char** c) {
 }
 
 static int decoder_peek(Decoder* d, unsigned char** c) {
-	if (buffered(d) < 1) {
+	if (mp_dec_buffered(d) < 1) {
 		TRY(fill(d));
 	}
 	*c = d->base + d->off;
@@ -222,7 +231,7 @@ static void unread_byte(Decoder* d) {
 }
 
 static int read_byte(Decoder* d, uint8_t* b) {
-	if (buffered(d) < 1) {
+	if (mp_dec_buffered(d) < 1) {
 		TRY(fill(d));
 	};
 	*b = *readoff(d);
@@ -231,7 +240,7 @@ static int read_byte(Decoder* d, uint8_t* b) {
 }
 
 static int peek8(Decoder* d, uint8_t* u) {
-	while (buffered(d) < 2) {
+	while (mp_dec_buffered(d) < 2) {
 		TRY(fill(d));
 	}
 	unsigned char* p = d->base + d->off + 1;
@@ -240,7 +249,7 @@ static int peek8(Decoder* d, uint8_t* u) {
 }
 
 static int peek16(Decoder* d, uint16_t* u) {
-	while (buffered(d) < 3) {
+	while (mp_dec_buffered(d) < 3) {
 		TRY(fill(d));
 	}
 	unsigned char* p = d->base + d->off + 1;
@@ -252,7 +261,7 @@ static int peek16(Decoder* d, uint16_t* u) {
 }
 
 static int peek32(Decoder* d, uint32_t* u) {
-	while (buffered(d) < 5) {
+	while (mp_dec_buffered(d) < 5) {
 		TRY(fill(d));
 	}
 	unsigned char* p = d->base + d->off + 1;
@@ -331,7 +340,7 @@ static bool fixstr(uint8_t b, uint32_t* sz) {
 // get next object size; self in *this and number of children in *sub
 static int next_size(Decoder* d, size_t* this, size_t* sub) {
 	int err;
-	if (buffered(d) < 1) {
+	if (mp_dec_buffered(d) < 1) {
 		err = fill(d);
 		if (err != MSGPACK_OK) return err;
 	}
@@ -442,6 +451,21 @@ static int next_size(Decoder* d, size_t* this, size_t* sub) {
 		*this = 18;
 		*sub = 0;
 		return MSGPACK_OK;
+	case TAG_EXT8:
+		err = peek8(d, &b);
+		*this = 3 + (size_t)b;
+		*sub = 0;
+		return err;
+	case TAG_EXT16:
+		err = peek16(d, &l);
+		*this = 4 + (size_t)l;
+		*sub = 0;
+		return err;
+	case TAG_EXT32:
+		err = peek32(d, &m);
+		*this = 6 + (size_t)m;
+		*sub = 0;
+		return err;
 	case TAG_INVALID:
 		return ERR_MSGPACK_BAD_TYPE;
 	}
@@ -464,26 +488,26 @@ static int skipn(Decoder* d, size_t n) {
 	return MSGPACK_OK;
 }
 
-int msgpack_skip(Decoder* d) {
+int mp_skip(Decoder* d) {
 	size_t t; // tag size
 	size_t s; // composite size
 	TRY(next_size(d, &t, &s));
 	err = skipn(d, t);
 	if (err != MSGPACK_OK) return err;
 	while (s > 0) {
-		err = msgpack_skip(d);
+		err = mp_skip(d);
 		if (err != MSGPACK_OK) return err;
 		--s;
 	}
 	return MSGPACK_OK;
 }
 
-int msgpack_read_raw(Decoder* d, char* buf, size_t amt) {
+int mp_read(Decoder* d, char* buf, size_t amt) {
 	while (amt > 0) {
-		if (buffered(d) == 0) {
+		if (mp_dec_buffered(d) == 0) {
 			TRY(fill(d));
 		}
-		size_t avail = buffered(d);
+		size_t avail = mp_dec_buffered(d);
 		size_t cpy = (amt < avail) ? amt : avail;
 		memcpy(buf, readoff(d), cpy);
 		d->off += cpy;
@@ -493,10 +517,10 @@ int msgpack_read_raw(Decoder* d, char* buf, size_t amt) {
 	return MSGPACK_OK;
 }
 
-int msgpack_next_type(Decoder* d, WireTyp* ty) {
+int mp_next_type(Decoder* d, WireTyp* ty) {
 	unsigned char* c;
 	TRY(decoder_peek(d, &c));
-	*ty = msgpack_type((uint8_t)(*c));
+	*ty = mp_type((uint8_t)(*c));
 	return MSGPACK_OK;
 }
 
@@ -516,14 +540,14 @@ static bool fixuint(uint8_t b, uint64_t* u) {
 	return false;
 }
 
-int msgpack_read_uint(Decoder* d, uint64_t* u) {
+int mp_read_uint(Decoder* d, uint64_t* u) {
 	uint8_t b;
 	uint16_t m;
 	uint32_t l;
 	int o = read_byte(d, &b);
 	if (o != MSGPACK_OK) return o;
 	if (fixuint(b, u)) return MSGPACK_OK;
-	switch ((tag_t)b) {
+	switch ((tag)b) {
 	case TAG_UINT8:
 		o = read_byte(d, &b);
 		*u = (uint64_t)b;
@@ -544,7 +568,7 @@ int msgpack_read_uint(Decoder* d, uint64_t* u) {
 	}
 }
 
-int msgpack_read_int(Decoder* d, int64_t* i) {
+int mp_read_int(Decoder* d, int64_t* i) {
 	uint8_t b;
 	uint16_t m;
 	uint32_t l;
@@ -552,7 +576,7 @@ int msgpack_read_int(Decoder* d, int64_t* i) {
 	int o = read_byte(d, &b);
 	if (o != MSGPACK_OK) return o;
 	if (fixint(b, i)) return MSGPACK_OK;
-	switch ((tag_t)b) {
+	switch ((tag)b) {
 	case TAG_INT8:
 		o = read_byte(d, &b);
 		*i = (int64_t)((int8_t)b);
@@ -575,10 +599,10 @@ int msgpack_read_int(Decoder* d, int64_t* i) {
 	}
 }
 
-int msgpack_read_float(Decoder* d, float* f) {
+int mp_read_float(Decoder* d, float* f) {
 	uint8_t b;
 	TRY(read_byte(d, &b));
-	if ((tag_t)b != TAG_F32) {
+	if ((tag)b != TAG_F32) {
 		unread_byte(d);
 		return ERR_MSGPACK_BAD_TYPE;
 	}
@@ -588,10 +612,10 @@ int msgpack_read_float(Decoder* d, float* f) {
 	return err;
 }
 
-int msgpack_read_double(Decoder* d, double* f) {
+int mp_read_double(Decoder* d, double* f) {
 	uint8_t b;
 	TRY(read_byte(d, &b));
-	if ((tag_t)b != TAG_F64) {
+	if ((tag)b != TAG_F64) {
 		unread_byte(d);
 		return ERR_MSGPACK_BAD_TYPE;
 	}
@@ -601,10 +625,10 @@ int msgpack_read_double(Decoder* d, double* f) {
 	return err;
 }
 
-int msgpack_read_bool(Decoder* d, bool* b) {
+int mp_read_bool(Decoder* d, bool* b) {
 	uint8_t t;
 	TRY(read_byte(d, &t));
-	switch ((tag_t)t) {
+	switch ((tag)t) {
 	case TAG_TRUE:
 		*b = true;
 		return MSGPACK_OK;
@@ -617,22 +641,22 @@ int msgpack_read_bool(Decoder* d, bool* b) {
 	}
 }
 
-int msgpack_read_nil(Decoder* d) {
+int mp_read_nil(Decoder* d) {
 	uint8_t t;
 	TRY(read_byte(d, &t));
-	if ((tag_t)t != TAG_NIL) {
+	if ((tag)t != TAG_NIL) {
 		unread_byte(d);
 		return ERR_MSGPACK_BAD_TYPE;
 	}
 	return MSGPACK_OK;
 }
 
-int msgpack_read_mapsize(Decoder* d, uint32_t* sz) {
+int mp_read_mapsize(Decoder* d, uint32_t* sz) {
 	uint8_t t;
 	uint16_t u;
 	TRY(read_byte(d, &t));
 	if (fixmap(t, sz)) return MSGPACK_OK;
-	switch ((tag_t)t) {
+	switch ((tag)t) {
 	case TAG_MAP16:
 		err = read_be16(d, &u);
 		*sz = (uint32_t)u;
@@ -645,12 +669,12 @@ int msgpack_read_mapsize(Decoder* d, uint32_t* sz) {
 	}
 }
 
-int msgpack_read_arraysize(Decoder* d, uint32_t* sz) {
+int mp_read_arraysize(Decoder* d, uint32_t* sz) {
 	uint8_t t;
 	uint16_t u;
 	TRY(read_byte(d, &t));
 	if (fixarray(t, sz)) return MSGPACK_OK;
-	switch ((tag_t)t) {
+	switch ((tag)t) {
 	case TAG_ARRAY16:
 		err = read_be16(d, &u);
 		*sz = (uint32_t)u;
@@ -663,12 +687,12 @@ int msgpack_read_arraysize(Decoder* d, uint32_t* sz) {
 	}
 }
 
-int msgpack_read_strsize(Decoder* d, uint32_t* sz) {
+int mp_read_strsize(Decoder* d, uint32_t* sz) {
 	uint8_t t;
 	uint16_t u;
 	TRY(read_byte(d, &t));
 	if (fixstr(t, sz)) return MSGPACK_OK;
-	switch ((tag_t)t) {
+	switch ((tag)t) {
 	case TAG_STR8:
 		err = read_byte(d, &t);
 		*sz = (uint32_t)t;
@@ -685,11 +709,11 @@ int msgpack_read_strsize(Decoder* d, uint32_t* sz) {
 	}
 }
 
-int msgpack_read_binsize(Decoder* d, uint32_t* sz) {
+int mp_read_binsize(Decoder* d, uint32_t* sz) {
 	uint8_t t;
 	uint16_t u;
 	TRY(read_byte(d, &t));
-	switch ((tag_t)t) {
+	switch ((tag)t) {
 	case TAG_BIN8:
 		err = read_byte(d, &t);
 		*sz = (uint32_t)t;
@@ -706,11 +730,11 @@ int msgpack_read_binsize(Decoder* d, uint32_t* sz) {
 	}
 }
 
-int msgpack_read_extsize(Decoder* d, int8_t* tg, uint32_t* sz) {
+int mp_read_extsize(Decoder* d, int8_t* tg, uint32_t* sz) {
 	uint8_t t;
 	uint16_t u;
 	TRY(read_byte(d, &t));
-	switch ((tag_t)t) {
+	switch ((tag)t) {
 	case TAG_EXT8:
 		err = read_byte(d, &t);
 		*sz = (uint32_t)t;
@@ -748,7 +772,7 @@ int msgpack_read_extsize(Decoder* d, int8_t* tg, uint32_t* sz) {
 	}
 }
 
-void msgpack_encode_stream_init(Encoder* e, void* ctx, Flush w, void* mem, size_t cap) {
+void mp_encode_stream_init(Encoder* e, void* ctx, Flush w, unsigned char* mem, size_t cap) {
 	e->base = mem;
 	e->off = 0;
 	e->cap = cap;
@@ -757,7 +781,7 @@ void msgpack_encode_stream_init(Encoder* e, void* ctx, Flush w, void* mem, size_
 	return;
 }
 
-void msgpack_encode_mem_init(Encoder* e, void* mem, size_t cap) {
+void mp_encode_mem_init(Encoder* e, unsigned char* mem, size_t cap) {
 	e->base = mem;
 	e->off = 0;
 	e->cap = cap;
@@ -766,7 +790,7 @@ void msgpack_encode_mem_init(Encoder* e, void* mem, size_t cap) {
 	return;
 }
 
-int msgpack_flush(Encoder* e) {
+int mp_flush(Encoder* e) {
 	if (e->off == 0) return MSGPACK_OK;
 	if (e->write != NULL) {
 		size_t wrote = e->write(e->ctx, e->base, e->off);
@@ -785,17 +809,21 @@ int msgpack_flush(Encoder* e) {
 	return MSGPACK_OK;
 }
 
+size_t mp_enc_buffered(Encoder* e) { return e->off; }
+
+size_t mp_enc_capacity(Encoder* e) { return e->cap; }
+
 static size_t avail(Encoder* e) {
 	return e->cap - e->off;
 }
 
-int msgpack_write_raw(Encoder* e, const char* buf, size_t amt) {
-	if (amt > e->cap) {
-		TRY(msgpack_flush(e));
-		return amt == e->write(e->ctx, buf, amt);
-	}
+int mp_write(Encoder* e, const char* buf, size_t amt) {
 	if (amt > avail(e)) {
-		TRY(msgpack_flush(e));
+		TRY(mp_flush(e));
+		if (amt > e->cap) {
+			size_t wrote = e->write(e->ctx, buf, amt);
+			if (wrote != amt) return ERR_MSGPACK_CHECK_ERRNO;
+		}
 	}
 	memcpy(e->base + e->off, buf, amt);
 	e->off += amt;
@@ -803,9 +831,11 @@ int msgpack_write_raw(Encoder* e, const char* buf, size_t amt) {
 }
 
 static int next(Encoder* e, size_t amt, unsigned char** c)  {
-	if (amt > e->cap) return ERR_MSGPACK_EOF;
 	if (amt > avail(e)) {
-		TRY(msgpack_flush(e));
+		if (amt > e->cap) {
+			return ERR_MSGPACK_EOF;
+		}
+		TRY(mp_flush(e));
 	}
 	*c = e->base + e->off;
 	e->off += amt;
@@ -814,7 +844,7 @@ static int next(Encoder* e, size_t amt, unsigned char** c)  {
 
 static int write_byte(Encoder* e, uint8_t b) {
 	if (avail(e) == 0) {
-		TRY(msgpack_flush(e));
+		TRY(mp_flush(e));
 	}
 	unsigned char* c = e->base + e->off;
 	*c = b;
@@ -822,7 +852,7 @@ static int write_byte(Encoder* e, uint8_t b) {
 	return MSGPACK_OK;
 }
 
-static int write_prefix8(Encoder* e, tag_t t, uint8_t b) {
+static int write_prefix8(Encoder* e, tag t, uint8_t b) {
 	unsigned char* c;
 	TRY(next(e, 2, &c));
 	*c++ = t;
@@ -830,22 +860,22 @@ static int write_prefix8(Encoder* e, tag_t t, uint8_t b) {
 	return MSGPACK_OK;
 }
 
-static int write_prefix16(Encoder* e, tag_t t, uint16_t u) {
+static int write_prefix16(Encoder* e, tag t, uint16_t u) {
 	write_BE(e, u, t, 2);
 	return MSGPACK_OK;
 }
 
-static int write_prefix32(Encoder* e, tag_t t, uint32_t u) {
+static int write_prefix32(Encoder* e, tag t, uint32_t u) {
 	write_BE(e, u, t, 4);
 	return MSGPACK_OK;
 }
 
-static int write_prefix64(Encoder* e, tag_t t, uint64_t u) {
+static int write_prefix64(Encoder* e, tag t, uint64_t u) {
 	write_BE(e, u, t, 8);
 	return MSGPACK_OK;
 }
 
-int msgpack_write_int(Encoder* e, int64_t i) {
+int mp_write_int(Encoder* e, int64_t i) {
 	int64_t a = (i < 0 ? -i : i);
 	if (i > -32 && i < 0) {
 		int8_t j = (int8_t)i;
@@ -862,7 +892,7 @@ int msgpack_write_int(Encoder* e, int64_t i) {
 	return write_prefix64(e, TAG_INT64, (uint64_t)i);
 }
 
-int msgpack_write_uint(Encoder* e, uint64_t u) {
+int mp_write_uint(Encoder* e, uint64_t u) {
 	if (u < 127) {
 		return write_byte(e, (uint8_t)u);
 	} else if (u < 256) {
@@ -875,25 +905,25 @@ int msgpack_write_uint(Encoder* e, uint64_t u) {
 	return write_prefix64(e, TAG_UINT64, u);
 }
 
-int msgpack_write_float(Encoder* e, float f) {
+int mp_write_float(Encoder* e, float f) {
 	float_pun fp;
 	fp.val = f;
 	return write_prefix32(e, TAG_F32, fp.bits);
 }
 
-int msgpack_write_double(Encoder* e, double f) {
+int mp_write_double(Encoder* e, double f) {
 	double_pun dp;
 	dp.val = f;
 	return write_prefix64(e, TAG_F64, dp.bits);
 }
 
-int msgpack_write_bool(Encoder* e, bool b) {
+int mp_write_bool(Encoder* e, bool b) {
 	if (b) return write_byte(e, TAG_TRUE);
 	return write_byte(e, TAG_FALSE);
 }
 
 
-int msgpack_write_mapsize(Encoder* e, uint32_t sz) {
+int mp_write_mapsize(Encoder* e, uint32_t sz) {
 	if (sz < (1<<4)) {
 		return write_byte(e, (sz|0x80)&0xff);
 	} else if (sz < (1<<16) - 1) {
@@ -902,7 +932,7 @@ int msgpack_write_mapsize(Encoder* e, uint32_t sz) {
 	return write_prefix32(e, TAG_MAP32, sz);
 }
 
-int msgpack_write_arraysize(Encoder* e, uint32_t sz) {
+int mp_write_arraysize(Encoder* e, uint32_t sz) {
 	if (sz < (1<<4)) {
 		return write_byte(e, (sz|0x90)&0xff);
 	} else if (sz < (1<<16) - 1) {
@@ -911,12 +941,12 @@ int msgpack_write_arraysize(Encoder* e, uint32_t sz) {
 	return write_prefix32(e, TAG_ARRAY32, sz);
 }
 
-int msgpack_write_str(Encoder* e, const char* c, uint32_t sz) {
-	TRY(msgpack_write_strsize(e, sz));
-	return msgpack_write_raw(e, c, (size_t)sz);
+int mp_write_str(Encoder* e, const char* c, uint32_t sz) {
+	TRY(mp_write_strsize(e, sz));
+	return mp_write(e, c, (size_t)sz);
 }
 
-int msgpack_write_strsize(Encoder* e, uint32_t sz) {
+int mp_write_strsize(Encoder* e, uint32_t sz) {
 	if (sz < (1<<5)) {
 		return write_byte(e, ((uint8_t)sz)|0xa0);
 	} else if (sz < (1<<8) - 1) {
@@ -927,7 +957,7 @@ int msgpack_write_strsize(Encoder* e, uint32_t sz) {
 	return write_prefix32(e, TAG_STR32, sz);
 }
 
-int msgpack_write_binsize(Encoder* e, uint32_t sz) {
+int mp_write_binsize(Encoder* e, uint32_t sz) {
 	if (sz < (1<<8) - 1) {
 		return write_prefix8(e, TAG_BIN8, (uint8_t)sz);
 	} else if (sz < (1<<16) - 1) {
@@ -936,12 +966,12 @@ int msgpack_write_binsize(Encoder* e, uint32_t sz) {
 	return write_prefix32(e, TAG_BIN32, sz);
 }
 
-int msgpack_write_bin(Encoder* e, const void* c, uint32_t sz) {
-	TRY(msgpack_write_binsize(e, sz));
-	return msgpack_write_raw(e, c, (size_t)sz);
+int mp_write_bin(Encoder* e, const char* c, uint32_t sz) {
+	TRY(mp_write_binsize(e, sz));
+	return mp_write(e, c, (size_t)sz);
 }
 
-int msgpack_write_extsize(Encoder* e, int8_t tg, uint32_t sz) {
+int mp_write_extsize(Encoder* e, int8_t tg, uint32_t sz) {
 	int err;
 	switch (sz) {
 	case 1:
@@ -973,12 +1003,12 @@ typ: /* type is always written at the end */
 	return write_byte(e, (uint8_t)tg);
 }
 
-int msgpack_write_ext(Encoder*e, int8_t tg, const void* c, uint32_t sz) {
-	TRY(msgpack_write_extsize(e, tg, sz));
-	return msgpack_write_raw(e, c, (size_t)sz);
+int mp_write_ext(Encoder*e, int8_t tg, const char* c, uint32_t sz) {
+	TRY(mp_write_extsize(e, tg, sz));
+	return mp_write(e, c, (size_t)sz);
 }
 
-int msgpack_write_nil(Encoder* e) {
+int mp_write_nil(Encoder* e) {
 	return write_byte(e, TAG_NIL);
 }
 

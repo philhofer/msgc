@@ -6,18 +6,6 @@
 #include <string.h>
 #include "msgpack.h"
 
-#define BE_ROLL(p, u, sz) \
-	for (uint8_t off=0; off<sz; off++) { \
-		*p++ = (u>>(8*(sz-off-1)))&0xff; \
-	}
-
-#define write_BE(e, i, tag, amt) \
-	unsigned char *c; \
-	int r = next(e, amt+1, &c); \
-	CHECK(r); \
-	*c++ = tag; \
-	BE_ROLL(c, i, amt)
-
 #ifdef __gcc__
 	#define unlikely(x) __builtin_expect(!!(x), 1)
 #elif __clang__
@@ -517,15 +505,16 @@ static int skipn(mp_decoder_t *d, size_t n) {
 }
 
 int mp_skip(mp_decoder_t *d) {
-	size_t t; // tag size
-	size_t s; // composite size
-	int r = next_size(d, &t, &s);
+	size_t pre;
+	size_t sub;
+	int r = next_size(d, &pre, &sub);
 	CHECK(r);
-	r = skipn(d, t);
+	r = skipn(d, pre);
 	CHECK(r);
-	while (s--) {
+	while (sub) {
 		r = mp_skip(d);
 		CHECK(r);
+		--sub;
 	}
 	return MSGPACK_OK;
 }
@@ -876,15 +865,15 @@ static size_t avail(mp_encoder_t *e) {
 ssize_t mp_write(mp_encoder_t *e, const char *buf, size_t amt) {
 	if (amt > avail(e)) {
 
-		/* no space in buffer -> EOF */
+		/* no space in buffer -- EOF */
 		if (e->write == NULL)
 			return 0;
 
-		int r = mp_flush(e);
-		if (unlikely(r))
+		if (unlikely(mp_flush(e)))
 			return -1;
 		
-		/* If we're writing a chunk
+		/* 
+		 * If we're writing a chunk
 		 * larger than the size of
 		 * the buffer, then we'll
 		 * write it directly to the
@@ -909,11 +898,8 @@ int mp_write_byte(mp_encoder_t *e, unsigned char b) {
 	return MSGPACK_OK;
 }
 
-static int next(mp_encoder_t *e, size_t amt, unsigned char **c)  {
+static inline int next(mp_encoder_t *e, size_t amt, unsigned char **c)  {
 	if (amt > avail(e)) {
-		if (amt > e->cap) {
-			return ERR_MSGPACK_EOF;
-		}
 		int r = mp_flush(e);
 		CHECK(r);
 	}
@@ -943,17 +929,40 @@ static int write_prefix8(mp_encoder_t *e, tag t, uint8_t b) {
 }
 
 static int write_prefix16(mp_encoder_t *e, tag t, uint16_t u) {
-	write_BE(e, u, t, 2);
+	unsigned char *c;
+	int r = next(e, 3, &c);
+	CHECK(r);
+	*c++ = (uint8_t)(t);
+	*c++ = (uint8_t)((u>>8)&0xff);
+	*c = (uint8_t)(u&0xff);
 	return MSGPACK_OK;
 }
 
 static int write_prefix32(mp_encoder_t *e, tag t, uint32_t u) {
-	write_BE(e, u, t, 4);
+	unsigned char *c;
+	int r = next(e, 5, &c);
+	CHECK(r);
+	*c++ = (uint8_t)(t);
+	*c++ = (uint8_t)((u>>24)&0xff);
+	*c++ = (uint8_t)((u>>16)&0xff);
+	*c++ = (uint8_t)((u>>8)&0xff);
+	*c = (uint8_t)(u&0xff);
 	return MSGPACK_OK;
 }
 
 static int write_prefix64(mp_encoder_t *e, tag t, uint64_t u) {
-	write_BE(e, u, t, 8);
+	unsigned char *c;
+	int r = next(e, 9, &c);
+	CHECK(r);
+	*c++ = (uint8_t)(t);
+	*c++ = (uint8_t)((u>>56)&0xff);
+	*c++ = (uint8_t)((u>>48)&0xff);
+	*c++ = (uint8_t)((u>>40)&0xff);
+	*c++ = (uint8_t)((u>>32)&0xff);
+	*c++ = (uint8_t)((u>>24)&0xff);
+	*c++ = (uint8_t)((u>>16)&0xff);
+	*c++ = (uint8_t)((u>>8)&0xff);
+	*c = (uint8_t)(u&0xff);
 	return MSGPACK_OK;
 }
 
@@ -1033,7 +1042,7 @@ int mp_write_str(mp_encoder_t *e, const char *c, uint32_t sz) {
 
 int mp_write_strsize(mp_encoder_t *e, uint32_t sz) {
 	if (sz < (1<<5)) {
-		return write_byte(e, ((uint8_t)sz)|0xa0);
+		return write_byte(e, (sz|0xa0)&0xff);
 	} else if (sz < (1<<8)) {
 		return write_prefix8(e, TAG_STR8, (uint8_t)sz);
 	} else if (sz < (1<<16)) {

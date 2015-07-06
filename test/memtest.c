@@ -2,7 +2,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
-#include "msgpack.h"
+#include "../msgpack.h"
 
 /* WARNING: GROSS MACRO NONSENSE AHEAD */
 

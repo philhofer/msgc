@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <stdio.h>
-#include "msgpack.h"
+#include "../msgpack.h"
 
 typedef struct {
 	unsigned char *ptr;
@@ -13,7 +13,7 @@ typedef struct {
 } buf_t;
 
 static size_t buffered(buf_t *b) {
-	return b->roff - b->woff;
+	return b->woff - b->roff;
 }
 
 static size_t availspc(buf_t *b) {

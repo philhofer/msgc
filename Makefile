@@ -1,36 +1,38 @@
 CC = clang
-CFLAGS = -c -Werror -Weverything -Wno-switch-enum -pedantic-errors -O3
-LINKFLAGS = -Werror -Weverything -Wno-switch-enum -pedantic-errors -O3
+CFLAGS = -c -std=c11 -Werror -Wall -Wno-switch-enum -pedantic-errors -O3
+LINKFLAGS = -Werror -Wall -Wno-switch-enum -pedantic-errors -O3
 
-msgpack.o: msgpack.c
-	$(CC) $(CFLAGS) msgpack.c -o msgpack.o
+TESTFLAGS = -std=c11 -Werror -Wall -Wno-switch-enum -pedantic-errors -fsanitize=address,undefined,integer -O3
 
-memtest.o: memtest.c
-	$(CC) $(CFLAGS) memtest.c -o memtest.o
+LIBDIR = lib
+TESTDIR = test
+BENCHDIR = bench
 
-memtest.out: memtest.o msgpack.o
-	$(CC) $(LINKFLAGS) memtest.o msgpack.o -o memtest.out
+TESTS = memtest streamtest
+BENCHMKS = membench
 
-streamtest.o: streamtest.c
-	$(CC) $(CFLAGS) streamtest.c -o streamtest.o
+.PRECIOUS: $(LIBDIR)/%.o
 
-streamtest.out: streamtest.o msgpack.o
-	$(CC) $(LINKFLAGS) streamtest.o msgpack.o -o streamtest.out
+%.o: %.c
+	$(CC) $(CFLAGS) $< -o $@
 
-membench.o: membench.c
-	$(CC) $(CFLAGS) membench.c -o membench.o
+$(LIBDIR)/%.o: %.c
+	$(CC) $(CFLAGS) $< -o $@
 
-membench.out: membench.o msgpack.o
-	$(CC) $(LINKFLAGS) membench.o msgpack.o -o membench.out
+%.test.out: $(TESTDIR)/%.c msgpack.c
+	$(CC) $(TESTFLAGS) $^ -o $@
+
+%.bench.out: $(BENCHDIR)/%.o $(LIBDIR)/msgpack.o
+	$(CC) $(LINKFLAGS) $^ -o $@
 
 .PHONY: test bench clean
 
-test: memtest.out streamtest.out
-	./memtest.out
-	./streamtest.out
+test: streamtest.test.out memtest.test.out
+	./streamtest.test.out
+	./memtest.test.out
 
-bench: membench.out
-	./membench.out
-	
+bench: membench.bench.out
+	./membench.bench.out
+
 clean:
-	$(RM) -r *.o *.gch *.bc *.out *.dSYM
+	$(RM) -r *.o *.out

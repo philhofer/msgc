@@ -3,10 +3,8 @@
 #include <time.h>
 #include "msgpack.h"
 
-// CLOCKS_PER_SEC is usually one million,
-// so we'll do that many iterations
 #define MILLION 1000000
-#define ITERS MILLION
+#define ITERS 5*MILLION
 
 #define BUFSIZE 2048
 
@@ -18,12 +16,12 @@
 
 int main() {
 	printf("Running benchmarks...\n");
-	Encoder enc;
-	Decoder dec;
+	mp_encoder_t enc;
+	mp_decoder_t dec;
 	unsigned char buf[BUFSIZE];
 
 	clock_t start = clock();
-	for(int i=0; i<ITERS; i++) {
+	for(int i=0; i<ITERS; ++i) {
 		// ENCODE BENCHMARK BODY
 		mp_encode_mem_init(&enc, buf, BUFSIZE);
 		mp_write_mapsize(&enc, 5);
@@ -46,7 +44,7 @@ int main() {
 	// validation of the encoded body
 	start = clock();
 	size_t blen = enc.off;
-	for(int i=0; i<ITERS; i++) {
+	for(int i=0; i<ITERS; ++i) {
 		mp_decode_mem_init(&dec, buf, blen);
 		mp_skip(&dec);
 	}
@@ -57,8 +55,7 @@ int main() {
 	start = clock();
 	uint32_t sz;
 	char scratch[256]; // for string
-	for(int i=0; i<ITERS; i++) {
-		// DECODE BENCHMARK BODY
+	for(int i=0; i<ITERS; ++i) {
 		mp_decode_mem_init(&dec, buf, enc.off);
 		mp_read_mapsize(&dec, &sz);
 		assert(sz == 5);

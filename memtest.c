@@ -44,12 +44,12 @@
 		assert(raw); \
 		memset(raw, 1, sz); \
 		mp_encode_mem_init(&enc, buf, BUFSIZE); \
-		assert(mp_write(&enc, raw, sz) == MSGPACK_OK); \
+		assert(mp_write(&enc, raw, sz) > 0); \
 		assert(enc.off == sz); \
 		assert(0 == memcmp(enc.base, raw, enc.off)); \
 		mp_decode_mem_init(&dec, raw, enc.off); \
 		void* out = malloc(sz); \
-		assert(mp_read(&dec, out, sz) == MSGPACK_OK); \
+		assert(mp_read(&dec, out, sz) > 0); \
 		assert(dec.off == sz); \
 		assert(0 == memcmp(raw, out, sz)); \
 		free(raw); free(out); \
@@ -68,7 +68,7 @@
 			printf("FAIL: %s(size: %d): read size %d\n", #typ, sz, osz); \
 			failed = true; \
 		} else { \
-			assert(mp_read(&dec, o, sz) == MSGPACK_OK); \
+			assert(mp_read(&dec, o, sz) > 0); \
 			if (memcmp(o, val, sz) != 0) { \
 				printf("FAIL: %s(size: %d): in != out\n", #typ, sz); \
 				failed = true; \
@@ -128,8 +128,8 @@
 
 int main() {
 	printf("Running mem tests...\n");
-	Encoder enc;
-	Decoder dec;
+	mp_encoder_t enc;
+	mp_decoder_t dec;
 	unsigned char buf[BUFSIZE];
 	bool failed = false;
 
